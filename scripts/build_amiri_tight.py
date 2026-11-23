@@ -42,6 +42,7 @@ STACK_PATTERNS = (
     "LamHeh", "BaaHeh", "MemHeh", "KafHeh",
     "KafMem", "AynMem", "FaaMem", "HaaMem", "HehMem", "SadMem",
     "KafAlf", "KafLam", "KafKaf", "LamDal", "KafDal", "KafRaa", "KafBaa", "KafYaa",
+    "LamYaa", "HaaYaa", "MemYaa", "AynYaa", "FaaYaa", "HehYaa",
 )
 
 
@@ -147,7 +148,7 @@ def unstack_ocr_ligatures(font):
     return cleared
 
 
-def tighten_diacritics(font, above_margin=65, above_floor=300, below_margin=95, below_ceil=-110):
+def tighten_diacritics(font, above_margin=65, above_floor=500, below_margin=95, below_ceil=-280):
     glyph_set = font.getGlyphSet()
     gpos = font["GPOS"].table
     cmap = font.getBestCmap()
@@ -192,6 +193,19 @@ def tighten_diacritics(font, above_margin=65, above_floor=300, below_margin=95, 
                         if a.YCoordinate < target_y and a.YCoordinate <= -150:
                             a.YCoordinate = target_y
                             below_changed += 1
+    # Center above-mark X over final Raa/Zain (original X=98 drifts left over the next letter)
+    for lk in gpos.LookupList.Lookup:
+        if lk.LookupType != 4:
+            continue
+        for st in lk.SubTable:
+            if fatha not in set(st.MarkCoverage.glyphs):
+                continue
+            for bg_name in ("reh-ar.fina", "zain-ar.fina"):
+                if bg_name in st.BaseCoverage.glyphs:
+                    bi = st.BaseCoverage.glyphs.index(bg_name)
+                    for a in st.BaseArray.BaseRecord[bi].BaseAnchor:
+                        if a is not None and a.XCoordinate < 160:
+                            a.XCoordinate += 85
     return above_changed, below_changed
 
 
