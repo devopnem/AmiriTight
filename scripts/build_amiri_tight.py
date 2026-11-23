@@ -41,6 +41,7 @@ STACK_PATTERNS = (
     "SenHaa", "LamHaa", "KafLamMem",
     "LamHeh", "BaaHeh", "MemHeh", "KafHeh",
     "KafMem", "AynMem", "FaaMem", "HaaMem", "HehMem", "SadMem",
+    "KafAlf", "KafLam", "KafKaf", "LamDal", "KafDal", "KafRaa", "KafBaa", "KafYaa",
 )
 
 
