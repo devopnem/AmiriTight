@@ -33,6 +33,14 @@ ARABIC_SUBSET_UNICODES = (
     [0xFDF2, 0xFDFA, 0xFDFB]       # Allah, Sallallahu Alayhi Wasallam ﷺ, Jalla Jalaluhu ﷻ
 )
 
+# Glyph-name patterns for vertical stacked ligatures that hide/stack letters and hurt OCR
+# (Preserves Lam-Alef `لا`, Allah `لله`, Finjani Ayn, and normal cursive shaping)
+STACK_PATTERNS = (
+    "MemHaa", "LamMem", "BaaMem", "SenMem", "SadHaa", "BaaHaa",
+    "AboveHaa", "MemMem", "HaaHaa", "AynHaa", "FaaHaa", "HehHaa",
+    "SenHaa", "LamHaa", "KafLamMem",
+)
+
 
 def sample_glyph_points(glyph_set, glyph_name):
     rec = DecomposingRecordingPen(glyph_set)
@@ -113,86 +121,30 @@ def local_extents(pts, x_center, half_width=220):
     return min(local), max(local)
 
 
-def get_positional_forms(font):
-    cmap = font.getBestCmap()
-    gsub = font["GSUB"].table
-    forms = {"init": {}, "medi": {}, "fina": {}}
-    for fr in gsub.FeatureList.FeatureRecord:
-        if fr.FeatureTag in forms:
-            for li in fr.Feature.LookupListIndex:
-                lk = gsub.LookupList.Lookup[li]
-                for st in lk.SubTable:
-                    if hasattr(st, "mapping"):
-                        for k, v in st.mapping.items():
-                            forms[fr.FeatureTag][k] = v[0] if isinstance(v, list) else v
-
-    def get_g(cp, pos=None):
-        base = cmap.get(cp)
-        if not base:
-            return None
-        return forms[pos].get(base) if pos else base
-
-    return {
-        "lam_init": get_g(0x0644, "init"),
-        "lam_medi": get_g(0x0644, "medi"),
-        "meem_init": get_g(0x0645, "init"),
-        "meem_medi": get_g(0x0645, "medi"),
-        "meem_fina": get_g(0x0645, "fina"),
-        "haa_medi": get_g(0x062D, "medi"),
-        "haa_fina": get_g(0x062D, "fina"),
-        "khaa_medi": get_g(0x062E, "medi"),
-        "jeem_medi": get_g(0x062C, "medi"),
-        "baa_init": get_g(0x0628, "init"),
-        "baa_medi": get_g(0x0628, "medi"),
-        "seen_init": get_g(0x0633, "init"),
-        "sad_init": get_g(0x0635, "init"),
-        "alef_fina": get_g(0x0627, "fina"),
-        "heh_fina": get_g(0x0647, "fina"),
-    }
-
-
 def unstack_ocr_ligatures(font):
+    """
+    Directly remove SingleSubst (LookupType 1) target mappings that substitute
+    standard horizontal glyphs into vertically stacked ligature variants
+    (e.g. مخـ in مختصر, لمـ in المنطق, ـلم in علم, بحـ, صحـ, محمـ, بمـ, سمـ),
+    guaranteeing complete unstacking regardless of Context/ChainContext format,
+    while preserving Lam-Alef (`لا`) and Allah (`لله`).
+    """
     gsub = font["GSUB"].table
-    g = get_positional_forms(font)
-
-    meem_targets = {x for x in (g["meem_medi"], g["meem_fina"]) if x}
-    haa_targets = {x for x in (g["haa_medi"], g["haa_fina"], g["khaa_medi"], g["jeem_medi"]) if x}
-    stack_prefixes = {x for x in (g["lam_init"], g["lam_medi"], g["baa_init"], g["baa_medi"], g["seen_init"], g["sad_init"], g["meem_init"]) if x}
-    protected = {x for x in (g["alef_fina"], g["heh_fina"]) if x}
-
-    rlig_indices = set()
-    for fr in gsub.FeatureList.FeatureRecord:
-        if fr.FeatureTag == "rlig":
-            rlig_indices.update(fr.Feature.LookupListIndex)
-
-    removed_subtables = 0
-    for li in sorted(rlig_indices):
-        lk = gsub.LookupList.Lookup[li]
-        if lk.LookupType != 6:
-            continue
-        kept = []
-        for st in lk.SubTable:
-            if st.Format != 3:
-                kept.append(st)
-                continue
-            in_covs = [set(c.glyphs) for c in st.InputCoverage]
-            all_in = set().union(*in_covs) if in_covs else set()
-            if all_in & protected:
-                kept.append(st)
-                continue
-            has_prefix = len(in_covs) >= 2 and bool(in_covs[0] & stack_prefixes)
-            has_meem = any(bool(cov & meem_targets) for cov in in_covs[1:])
-            has_haa = any(bool(cov & haa_targets) for cov in in_covs[1:])
-            if has_prefix and (has_meem or has_haa):
-                removed_subtables += 1
-            else:
-                kept.append(st)
-        lk.SubTable = kept
-        lk.SubTableCount = len(kept)
-    return removed_subtables
+    cleared = 0
+    for lk in gsub.LookupList.Lookup:
+        if lk.LookupType == 1:
+            for st in lk.SubTable:
+                to_del = [
+                    k for k, v in st.mapping.items()
+                    if any(p in v for p in STACK_PATTERNS)
+                ]
+                for k in to_del:
+                    del st.mapping[k]
+                    cleared += 1
+    return cleared
 
 
-def tighten_diacritics(font, above_margin=65, above_floor=340, below_margin=95, below_ceil=-110):
+def tighten_diacritics(font, above_margin=65, above_floor=300, below_margin=95, below_ceil=-110):
     glyph_set = font.getGlyphSet()
     gpos = font["GPOS"].table
     cmap = font.getBestCmap()
@@ -262,16 +214,13 @@ def unify_line_metrics(font):
     """Ensure identical cross-platform line spacing (Linux/Windows/macOS) via USE_TYPO_METRICS."""
     os2 = font["OS/2"]
     hhea = font["hhea"]
-    # Bit 7 = USE_TYPO_METRICS
-    os2.fsSelection |= (1 << 7)
-    # Sync hhea and sTypo cleanly
+    os2.fsSelection |= (1 << 7)  # USE_TYPO_METRICS
     os2.sTypoAscender = 1124
     os2.sTypoDescender = -634
     os2.sTypoLineGap = 0
     hhea.ascent = 1124
     hhea.descent = -634
     hhea.lineGap = 0
-    # Tighten legacy Win clipping bounds slightly for tightened diacritics (prevents bloated spacing in old apps)
     os2.usWinAscent = 1480
     os2.usWinDescent = 780
 
@@ -311,7 +260,7 @@ def main():
             continue
         font = TTFont(src_path)
         orig_glyphs = len(font.getGlyphOrder())
-        removed = unstack_ocr_ligatures(font)
+        cleared = unstack_ocr_ligatures(font)
         above_n, below_n = tighten_diacritics(font)
         if not args.full:
             subset_arabic_only(font)
@@ -327,7 +276,7 @@ def main():
         ttf_kb = os.path.getsize(ttf_out) / 1024
         woff2_kb = os.path.getsize(woff2_out) / 1024
         print(
-            f"{ps_name:24s} | glyphs: {orig_glyphs}->{new_glyphs} | unstacked={removed} "
+            f"{ps_name:24s} | glyphs: {orig_glyphs}->{new_glyphs} | cleared_stacks={cleared} "
             f"| TTF={ttf_kb:5.1f}KB | WOFF2={woff2_kb:5.1f}KB"
         )
 
