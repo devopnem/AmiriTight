@@ -1,0 +1,76 @@
+name: Build and Release Amiri Tight
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  AMIRI_VERSION: "1.003"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install fonttools brotli
+
+      - name: Download upstream Amiri fonts
+        run: |
+          curl -sSL "https://github.com/aliftype/amiri/releases/download/${AMIRI_VERSION}/Amiri-${AMIRI_VERSION}.zip" -o amiri.zip
+          unzip -q amiri.zip -d upstream
+
+      - name: Build Amiri Tight (Arabic-optimized TTF & WOFF2)
+        run: |
+          python3 scripts/build_amiri_tight.py --src "upstream/Amiri-${AMIRI_VERSION}" --out dist_fonts
+
+      - name: Package release archive
+        run: |
+          TAG="${GITHUB_REF_NAME:-dev}"
+          mkdir -p "AmiriTight-${TAG}"
+          cp -r dist_fonts/ttf dist_fonts/woff2 OFL.txt AUTHORS.txt README.md "AmiriTight-${TAG}/"
+          zip -r "AmiriTight-${TAG}.zip" "AmiriTight-${TAG}"
+          ls -lh "AmiriTight-${TAG}.zip" dist_fonts/ttf/ dist_fonts/woff2/
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AmiriTight-dist
+          path: AmiriTight-*.zip
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AmiriTight-dist
+          path: dist
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/AmiriTight-*.zip

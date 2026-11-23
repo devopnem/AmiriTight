@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build artifacts
+upstream/
+dist_fonts/
+dist/
+AmiriTight-*/
+*.zip
+
+# OS and Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
