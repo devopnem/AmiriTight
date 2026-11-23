@@ -39,6 +39,8 @@ STACK_PATTERNS = (
     "MemHaa", "LamMem", "BaaMem", "SenMem", "SadHaa", "BaaHaa",
     "AboveHaa", "MemMem", "HaaHaa", "AynHaa", "FaaHaa", "HehHaa",
     "SenHaa", "LamHaa", "KafLamMem",
+    "LamHeh", "BaaHeh", "MemHeh", "KafHeh",
+    "KafMem", "AynMem", "FaaMem", "HaaMem", "HehMem", "SadMem",
 )
 
 
