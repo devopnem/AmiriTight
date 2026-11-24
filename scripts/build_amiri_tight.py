@@ -10,6 +10,7 @@ Usage:
 import argparse
 import os
 from fontTools.ttLib import TTFont
+from fontTools.ttLib.tables import otTables
 from fontTools.pens.recordingPen import DecomposingRecordingPen
 from fontTools.subset import Subsetter, Options
 
@@ -134,21 +135,26 @@ def unstack_ocr_ligatures(font):
     while preserving Lam-Alef (`لا`) and Allah (`لله`).
     """
     gsub = font["GSUB"].table
+    gset = set(font.getGlyphOrder())
     cleared = 0
     for lk in gsub.LookupList.Lookup:
         if lk.LookupType == 1:
             for st in lk.SubTable:
-                to_del = [
-                    k for k, v in st.mapping.items()
-                    if any(p in v for p in STACK_PATTERNS)
-                ]
-                for k in to_del:
-                    del st.mapping[k]
-                    cleared += 1
+                for k in list(st.mapping.keys()):
+                    v = st.mapping[k]
+                    if "BaaYaa" in v:
+                        if k.endswith(".init") and (k + ".Wide") in gset:
+                            st.mapping[k] = k + ".Wide"
+                        else:
+                            del st.mapping[k]
+                        cleared += 1
+                    elif any(p in v for p in STACK_PATTERNS):
+                        del st.mapping[k]
+                        cleared += 1
     return cleared
 
 
-def tighten_diacritics(font, above_margin=65, above_floor=500, below_margin=95, below_ceil=-280):
+def tighten_diacritics(font, above_margin=65, above_floor=500, below_margin=95, below_ceil=-125):
     glyph_set = font.getGlyphSet()
     gpos = font["GPOS"].table
     cmap = font.getBestCmap()
@@ -227,6 +233,104 @@ def subset_arabic_only(font):
     subsetter.subset(font)
 
 
+def add_yeh_fina_below_mark_drop(font, y_drop=-155):
+    """
+    Contextually drop below-marks (kasra/kasratan) ONLY when immediately followed by
+    final Yaa / Alef Maksura so the mark stays tight everywhere else (e.g. مِنَ)
+    while never touching the rightward-sweeping belly of final Yaa (e.g. صَلِيَ، عَلِيٌّ).
+    """
+    gpos = font["GPOS"].table
+    cmap = font.getBestCmap()
+    kasra = cmap.get(0x0650)
+
+    below_marks = set()
+    for lk in gpos.LookupList.Lookup:
+        if lk.LookupType == 4:
+            for st in lk.SubTable:
+                if kasra in st.MarkCoverage.glyphs:
+                    below_marks.update(st.MarkCoverage.glyphs)
+    for cp in (0x064D, 0x0650, 0x0656, 0x08F2):
+        if cp in cmap:
+            below_marks.add(cmap[cp])
+
+    gorder = font.getGlyphOrder()
+    gindex = {g: i for i, g in enumerate(gorder)}
+    yeh_finas = sorted(
+        [g for g in gorder if g.startswith(("yeh-ar.fina", "alefMaksura-ar.fina", "yehHamzaabove-ar.fina"))],
+        key=lambda g: gindex[g],
+    )
+    below_marks_sorted = sorted([g for g in below_marks if g in gindex], key=lambda g: gindex[g])
+    if not below_marks_sorted or not yeh_finas:
+        return 0
+
+    sp_st = otTables.SinglePos()
+    sp_st.Format = 1
+    sp_cov = otTables.Coverage()
+    sp_cov.glyphs = below_marks_sorted
+    sp_st.Coverage = sp_cov
+    sp_st.ValueFormat = 0x0002  # YPlacement
+    val = otTables.ValueRecord()
+    val.YPlacement = y_drop
+    sp_st.Value = val
+
+    sp_lk = otTables.Lookup()
+    sp_lk.LookupType = 1
+    sp_lk.LookupFlag = 0
+    sp_lk.SubTable = [sp_st]
+    sp_lk.SubTableCount = 1
+
+    sp_idx = len(gpos.LookupList.Lookup)
+    gpos.LookupList.Lookup.append(sp_lk)
+
+    all_marks = set(below_marks_sorted)
+    for lk in gpos.LookupList.Lookup:
+        if lk.LookupType == 4:
+            for st in lk.SubTable:
+                all_marks.update(st.MarkCoverage.glyphs)
+    all_marks_sorted = sorted([g for g in all_marks if g in gindex], key=lambda g: gindex[g])
+
+    def make_chain_st(lookahead_lists):
+        st = otTables.ChainContextPos()
+        st.Format = 3
+        st.BacktrackGlyphCount = 0
+        st.BacktrackCoverage = []
+        in_cov = otTables.Coverage()
+        in_cov.glyphs = below_marks_sorted
+        st.InputGlyphCount = 1
+        st.InputCoverage = [in_cov]
+        st.LookAheadGlyphCount = len(lookahead_lists)
+        st.LookAheadCoverage = []
+        for la in lookahead_lists:
+            c = otTables.Coverage()
+            c.glyphs = la
+            st.LookAheadCoverage.append(c)
+        rec = otTables.PosLookupRecord()
+        rec.SequenceIndex = 0
+        rec.LookupListIndex = sp_idx
+        st.PosCount = 1
+        st.PosLookupRecord = [rec]
+        return st
+
+    cc_lk = otTables.Lookup()
+    cc_lk.LookupType = 8
+    cc_lk.LookupFlag = 0
+    cc_lk.SubTable = [
+        make_chain_st([yeh_finas]),
+        make_chain_st([all_marks_sorted, yeh_finas]),
+    ]
+    cc_lk.SubTableCount = len(cc_lk.SubTable)
+
+    cc_idx = len(gpos.LookupList.Lookup)
+    gpos.LookupList.Lookup.append(cc_lk)
+    gpos.LookupList.LookupCount = len(gpos.LookupList.Lookup)
+
+    for fr in gpos.FeatureList.FeatureRecord:
+        if fr.FeatureTag == "mark":
+            fr.Feature.LookupListIndex.append(cc_idx)
+            fr.Feature.LookupCount = len(fr.Feature.LookupListIndex)
+    return len(below_marks_sorted)
+
+
 def unify_line_metrics(font):
     """Ensure identical cross-platform line spacing (Linux/Windows/macOS) via USE_TYPO_METRICS."""
     os2 = font["OS/2"]
@@ -281,6 +385,7 @@ def main():
         above_n, below_n = tighten_diacritics(font)
         if not args.full:
             subset_arabic_only(font)
+        add_yeh_fina_below_mark_drop(font, y_drop=-155)
         unify_line_metrics(font)
         update_name_table(font, style_name, family_name, full_name, ps_name)
         new_glyphs = len(font.getGlyphOrder())
